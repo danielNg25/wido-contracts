@@ -14,8 +14,8 @@ pragma solidity ^0.8.7;
 pragma abicoder v2;
 
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "@cryptoalgebra/periphery/contracts/libraries/LiquidityAmounts.sol";
-import "@cryptoalgebra/core/contracts/libraries/TickMath.sol";
+import "../../../../v3-periphery/contracts/libraries/LiquidityAmounts.sol";
+import "../../../../v3-core/contracts/libraries/TickMath.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@uniswap/lib/contracts/libraries/Babylonian.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -23,7 +23,7 @@ import "@uniswap/v3-core/contracts/libraries/LowGasSafeMath.sol";
 import "../interfaces/INonfungiblePositionManager.sol";
 import "../interfaces/ISwapRouter02.sol";
 import "../interfaces/IUniswapV3Pool.sol";
-import "../interfaces/IERC721Receiver.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 /// @title Uniswap V3 pools Zap
 /// @author Wido
@@ -47,6 +47,7 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
         int24 upperTick;
         uint256 minToToken;
         address recipient;
+        address dustRecipient;
     }
 
     /// @param fromToken Address of the token to swap
@@ -62,12 +63,7 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
     }
 
     // Implementing `onERC721Received` so this contract can receive custody of erc721 tokens
-    function onERC721Received(
-        address,
-        address,
-        uint256,
-        bytes calldata
-    ) external pure override returns (bytes4) {
+    function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
         return this.onERC721Received.selector;
     }
 
@@ -77,7 +73,7 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
         ISwapRouter02 router,
         INonfungiblePositionManager nonfungiblePositionManager,
         ZapInOrder memory order
-    ) external {
+    ) public returns (uint256 tokenId, uint256 liquidity) {
         require(
             order.pool.factory() == nonfungiblePositionManager.factory(),
             "Incompatible nonfungiblePositionManager and pool"
@@ -112,14 +108,7 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
         amount0 = IERC20(token0).balanceOf(address(this));
         amount1 = IERC20(token1).balanceOf(address(this));
 
-        (uint256 tokenId, uint128 liquidity) = _addLiquidity(
-            nonfungiblePositionManager,
-            order,
-            token0,
-            token1,
-            amount0,
-            amount1
-        );
+        (tokenId, liquidity) = _addLiquidity(nonfungiblePositionManager, order, token0, token1, amount0, amount1);
 
         uint256 dustBalance = IERC20(token0).balanceOf(address(this));
         if (dustBalance * token0Price > 1e18) {
@@ -133,14 +122,14 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
             _swap(router, order.pool, token0, token1, dustBalance - amount0);
 
             INonfungiblePositionManager.IncreaseLiquidityParams memory params = INonfungiblePositionManager
-            .IncreaseLiquidityParams({
-                tokenId: tokenId,
-                amount0Desired: IERC20(token0).balanceOf(address(this)),
-                amount1Desired: IERC20(token1).balanceOf(address(this)),
-                amount0Min: 0,
-                amount1Min: 0,
-                deadline: block.timestamp
-            });
+                .IncreaseLiquidityParams({
+                    tokenId: tokenId,
+                    amount0Desired: IERC20(token0).balanceOf(address(this)),
+                    amount1Desired: IERC20(token1).balanceOf(address(this)),
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp
+                });
             (uint128 addedLiquidity, , ) = nonfungiblePositionManager.increaseLiquidity(params);
             liquidity += addedLiquidity;
         }
@@ -157,14 +146,14 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
             _swap(router, order.pool, token1, token0, dustBalance - amount1);
 
             INonfungiblePositionManager.IncreaseLiquidityParams memory params = INonfungiblePositionManager
-            .IncreaseLiquidityParams({
-                tokenId: tokenId,
-                amount0Desired: IERC20(token0).balanceOf(address(this)),
-                amount1Desired: IERC20(token1).balanceOf(address(this)),
-                amount0Min: 0,
-                amount1Min: 0,
-                deadline: block.timestamp
-            });
+                .IncreaseLiquidityParams({
+                    tokenId: tokenId,
+                    amount0Desired: IERC20(token0).balanceOf(address(this)),
+                    amount1Desired: IERC20(token1).balanceOf(address(this)),
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp
+                });
             (uint128 addedLiquidity, , ) = nonfungiblePositionManager.increaseLiquidity(params);
             liquidity += addedLiquidity;
         }
@@ -173,13 +162,13 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
 
         dustBalance = IERC20(token0).balanceOf(address(this));
         if (dustBalance > 0) {
-            IERC20(token0).safeTransfer(order.recipient, dustBalance);
-            emit DustSent(order.recipient, dustBalance);
+            IERC20(token0).safeTransfer(order.dustRecipient, dustBalance);
+            emit DustSent(order.dustRecipient, dustBalance);
         }
         dustBalance = IERC20(token1).balanceOf(address(this));
         if (dustBalance > 0) {
-            IERC20(token1).safeTransfer(order.recipient, dustBalance);
-            emit DustSent(order.recipient, dustBalance);
+            IERC20(token1).safeTransfer(order.dustRecipient, dustBalance);
+            emit DustSent(order.dustRecipient, dustBalance);
         }
 
         nonfungiblePositionManager.safeTransferFrom(address(this), order.recipient, tokenId);
@@ -231,19 +220,19 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
         }
     }
 
-    function _removeLiquidity(INonfungiblePositionManager nonfungiblePositionManager, ZapOutOrder memory order)
-    private
-    returns (uint256 amount0, uint256 amount1)
-    {
+    function _removeLiquidity(
+        INonfungiblePositionManager nonfungiblePositionManager,
+        ZapOutOrder memory order
+    ) private returns (uint256 amount0, uint256 amount1) {
         (, , , , , , , uint128 liquidity, , , , ) = nonfungiblePositionManager.positions(order.tokenId);
         INonfungiblePositionManager.DecreaseLiquidityParams memory params = INonfungiblePositionManager
-        .DecreaseLiquidityParams({
-            tokenId: order.tokenId,
-            liquidity: liquidity,
-            amount0Min: 0,
-            amount1Min: 0,
-            deadline: block.timestamp
-        });
+            .DecreaseLiquidityParams({
+                tokenId: order.tokenId,
+                liquidity: liquidity,
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp
+            });
 
         (amount0, amount1) = nonfungiblePositionManager.decreaseLiquidity(params);
         nonfungiblePositionManager.collect(
@@ -312,19 +301,19 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
         int24 upperTick,
         bool isZapFromToken0
     )
-    private
-    view
-    returns (
-        uint256 amount0,
-        uint256 amount1,
-        uint160 sqrtPriceX96,
-        uint160 sqrtRatioAX96,
-        uint160 sqrtRatioBX96,
-        uint256 token0Price
-    )
+        private
+        view
+        returns (
+            uint256 amount0,
+            uint256 amount1,
+            uint160 sqrtPriceX96,
+            uint160 sqrtRatioAX96,
+            uint160 sqrtRatioBX96,
+            uint256 token0Price
+        )
     {
         (sqrtPriceX96, , , , , , ) = pool.slot0();
-        token0Price = FullMath.mulDiv(sqrtPriceX96.mul(1e18), sqrtPriceX96, 2**192);
+        token0Price = FullMath.mulDiv(sqrtPriceX96.mul(1e18), sqrtPriceX96, 2 ** 192);
         sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(lowerTick);
         sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(upperTick);
 
@@ -373,11 +362,11 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
         require(isZapFromToken0 || pool.token1() == fromToken, "Input token not present in liquidity pool");
 
         (
-        uint256 amount0,
-        uint256 amount1,
-        uint160 sqrtPriceX96,
-        uint160 sqrtRatioAX96,
-        uint160 sqrtRatioBX96,
+            uint256 amount0,
+            uint256 amount1,
+            uint160 sqrtPriceX96,
+            uint160 sqrtRatioAX96,
+            uint160 sqrtRatioBX96,
 
         ) = _calcZapInAmounts(pool, amount, lowerTick, upperTick, isZapFromToken0);
 
@@ -415,7 +404,7 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
             sqrtRatioBX96,
             liquidity
         );
-        uint256 token0Price = FullMath.mulDiv(sqrtPriceX96.mul(1e18), sqrtPriceX96, 2**192);
+        uint256 token0Price = FullMath.mulDiv(sqrtPriceX96.mul(1e18), sqrtPriceX96, 2 ** 192);
 
         if (isZapToToken0) {
             minToToken = amount0 + (amount1 * 1e18) / token0Price;

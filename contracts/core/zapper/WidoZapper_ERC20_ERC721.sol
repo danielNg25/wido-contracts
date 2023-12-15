@@ -19,7 +19,7 @@ import "@uniswap/v3-core/contracts/libraries/LowGasSafeMath.sol";
 import "../interfaces/INonfungiblePositionManager.sol";
 import "../interfaces/ISwapRouter02.sol";
 import "../interfaces/IUniswapV3Pool.sol";
-import "../interfaces/IERC721Receiver.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 /// @notice Add or remove liquidity from Uniswap V2-like pools using just one of the pool tokens
 abstract contract WidoZapper_ERC20_ERC721 is IERC721Receiver {

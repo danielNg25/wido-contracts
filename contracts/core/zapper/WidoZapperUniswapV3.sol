@@ -79,8 +79,6 @@ contract WidoZapperUniswapV3 is IERC721Receiver {
             "Incompatible nonfungiblePositionManager and pool"
         );
 
-        IERC20(order.fromToken).safeTransferFrom(msg.sender, address(this), order.amount);
-
         address token0 = order.pool.token0();
         address token1 = order.pool.token1();
 
